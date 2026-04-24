@@ -1,0 +1,14 @@
+tensorflow
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+scipy
+scikit-fuzzy
+statsmodels
+xgboost
+catboost
+skl2onnx
+onnx
+onnxruntime
