@@ -1,7 +1,7 @@
 import onnxruntime as ort
 import numpy as np
 
-sess = ort.InferenceSession('./models/classification/knn_model.onnx')
+sess = ort.InferenceSession('./models/classification/ann_model.onnx')
 
 # ── Print model info ──────────────────────────────────────────────────────────
 print("=== Model Info ===")
@@ -30,4 +30,4 @@ print("\n=== Training Data Ranges ===")
 for cls, name in label_map.items():
     vals = X_train[y_train == cls]
     if len(vals):
-        print(f"  {name:8s} (class {cls}): min={vals.min():.3f}  max={vals.max():.3f}  mean={vals.mean():.3f}  n={len(vals)}")
+        print(f"  {name:8s} (class {cls}): min={vals.min():.3f}  max={vals.max():.3f}  mean={vals.mean():.3f}  n={len(vals)}")  

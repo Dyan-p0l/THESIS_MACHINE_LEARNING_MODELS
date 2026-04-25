@@ -12,3 +12,4 @@ catboost
 skl2onnx
 onnx
 onnxruntime
+onnxmltools

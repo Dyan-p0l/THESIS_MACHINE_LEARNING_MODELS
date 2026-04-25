@@ -1,75 +1,94 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import (
+    classification_report, confusion_matrix,
+    ConfusionMatrixDisplay, f1_score, balanced_accuracy_score
+)
 from skl2onnx import convert_sklearn
 from skl2onnx.common.data_types import FloatTensorType
 import onnx
-import joblib
+import onnxruntime as ort
 import os
 
 os.makedirs('./results/classification/knn', exist_ok=True)
 os.makedirs('./models/classification', exist_ok=True)
 
 # ── Load preprocessed data ────────────────────────────────────────────────────
-# X is RAW (unscaled) — the Pipeline will handle scaling internally
 X_train = np.load('./data/preprocessed/X_train.npy')
 X_test  = np.load('./data/preprocessed/X_test.npy')
 y_train = np.load('./data/preprocessed/y_train.npy')
 y_test  = np.load('./data/preprocessed/y_test.npy')
 
-# ── Load the scaler fitted during preprocessing ───────────────────────────────
-scaler_clf = joblib.load('./data/artifacts/scaler_clf.pkl')
+# ── Hyperparameter search via cross-validation on TRAIN only ──────────────────
+# Test set is never touched during tuning
+print("Testing different values of K (5-fold CV on train set)...")
 
-# ── Find the best K ───────────────────────────────────────────────────────────
-print("Testing different values of K...")
-
-k_values   = range(1, 21)
-accuracies = []
+k_values  = range(1, 21)
+cv_means  = []
+cv_stds   = []
 
 for k in k_values:
-    # Each candidate is a full pipeline: scaler + knn
     candidate = Pipeline([
-        ('scaler',     scaler_clf),
+        ('scaler',     StandardScaler()),
         ('classifier', KNeighborsClassifier(n_neighbors=k)),
     ])
-    candidate.fit(X_train, y_train)
-    preds = candidate.predict(X_test)
-    acc   = np.mean(preds == y_test) * 100
-    accuracies.append(acc)
-    print(f"  K={k:2d} → Accuracy: {acc:.2f}%")
+    scores = cross_val_score(
+        candidate, X_train, y_train,
+        cv=5, scoring='f1_weighted'
+    )
+    cv_means.append(scores.mean())
+    cv_stds.append(scores.std())
+    print(f"  K={k:2d} → F1 (weighted): {scores.mean():.4f} ± {scores.std():.4f}")
 
-best_k   = k_values[np.argmax(accuracies)]
-best_acc = max(accuracies)
-print(f"\nBest K: {best_k} with accuracy: {best_acc:.2f}%")
+best_k      = list(k_values)[np.argmax(cv_means)]
+best_cv_f1  = max(cv_means)
+print(f"\nBest K: {best_k} with CV F1 (weighted): {best_cv_f1:.4f}")
 
-# ── Plot K vs Accuracy ────────────────────────────────────────────────────────
+# ── Plot K vs CV F1 ───────────────────────────────────────────────────────────
 plt.figure(figsize=(8, 4))
-plt.plot(k_values, accuracies, marker='o', color='steelblue', linewidth=2)
+plt.plot(k_values, cv_means, marker='o', color='steelblue', linewidth=2, label='CV F1 mean')
+plt.fill_between(
+    k_values,
+    np.array(cv_means) - np.array(cv_stds),
+    np.array(cv_means) + np.array(cv_stds),
+    alpha=0.2, color='steelblue', label='±1 std'
+)
 plt.axvline(x=best_k, color='red', linestyle='--', label=f'Best K={best_k}')
-plt.title("KNN — Accuracy vs K")
+plt.title("KNN — CV F1 (weighted) vs K")
 plt.xlabel("K (number of neighbors)")
-plt.ylabel("Accuracy (%)")
+plt.ylabel("F1 Score (weighted)")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('./results/classification/knn/knn_k_vs_accuracy.png', dpi=150)
+plt.savefig('./results/classification/knn/knn_k_vs_f1.png', dpi=150)
 plt.show()
-print("K vs Accuracy plot saved.")
+print("K vs F1 plot saved.")
 
-# ── Train final pipeline with best K ─────────────────────────────────────────
+# ── Train final pipeline with best K on full train set ────────────────────────
 final_pipeline = Pipeline([
-    ('scaler',     scaler_clf),
+    ('scaler',     StandardScaler()),
     ('classifier', KNeighborsClassifier(n_neighbors=best_k)),
 ])
 
 final_pipeline.fit(X_train, y_train)
+
+# ── Evaluate ONCE on test set ─────────────────────────────────────────────────
 final_pred = final_pipeline.predict(X_test)
 
-# ── Evaluate ──────────────────────────────────────────────────────────────────
-accuracy = np.mean(final_pred == y_test) * 100
-print(f"\nFinal Accuracy (K={best_k}): {accuracy:.2f}%\n")
+accuracy      = np.mean(final_pred == y_test) * 100
+f1            = f1_score(y_test, final_pred, average='weighted')
+bal_acc       = balanced_accuracy_score(y_test, final_pred)
+
+print(f"\n── Test Set Results (K={best_k}) ──")
+print(f"  Accuracy          : {accuracy:.2f}%")
+print(f"  F1 (weighted)     : {f1:.4f}")
+print(f"  Balanced Accuracy : {bal_acc:.4f}")
+print(f"  CV F1 mean ± std  : {best_cv_f1:.4f} ± {cv_stds[np.argmax(cv_means)]:.4f}\n")
 
 print("Classification Report:")
 print(classification_report(
@@ -92,17 +111,15 @@ plt.show()
 print("Confusion matrix saved.")
 
 np.save('./results/classification/knn/knn_predictions.npy', final_pred)
-print(f"Final predictions saved using best K={best_k}")
 
-# ── Export to ONNX — scaler baked in ─────────────────────────────────────────
-initial_type = [('float_input', FloatTensorType([None, 1]))]
+# ── Export to ONNX ────────────────────────────────────────────────────────────
+initial_type = [('float_input', FloatTensorType([None, X_train.shape[1]]))]
 onnx_model   = convert_sklearn(
     final_pipeline,
     initial_types=initial_type,
-    target_opset=12,          # explicitly cap at opset 12
+    target_opset=12,
 )
 
-# Validate before saving — crashes here instead of on device if broken
 onnx.checker.check_model(onnx_model)
 
 with open('./models/classification/knn_model.onnx', 'wb') as f:
@@ -110,15 +127,24 @@ with open('./models/classification/knn_model.onnx', 'wb') as f:
 
 print("\nONNX model saved.")
 
-# ── Quick runtime test — catches input/output name mismatches ─────────────────
-import onnxruntime as ort
-import numpy as np
-
+# ── Runtime test + inference timing ──────────────────────────────────────────
 sess = ort.InferenceSession('./models/classification/knn_model.onnx')
-print("Input name :", sess.get_inputs()[0].name)   # must be 'float_input'
-print("Input shape:", sess.get_inputs()[0].shape)  # should be [None, 1]
-print("Output name:", sess.get_outputs()[0].name)  # should be 'label'
+print("Input name :", sess.get_inputs()[0].name)
+print("Input shape:", sess.get_inputs()[0].shape)
+print("Output name:", sess.get_outputs()[0].name)
 
 dummy = np.array([[100.0]], dtype=np.float32)
+
+# Warm-up
+sess.run(None, {'float_input': dummy})
+
+# Timed runs
+n_runs = 100
+start  = time.perf_counter()
+for _ in range(n_runs):
+    sess.run(None, {'float_input': dummy})
+elapsed_ms = (time.perf_counter() - start) / n_runs * 1000
+
 result = sess.run(None, {'float_input': dummy})
-print("Test prediction:", result[0])               # should be 0, 1, or 2
+print(f"Test prediction  : {result[0]}")
+print(f"Avg inference time: {elapsed_ms:.4f} ms (over {n_runs} runs)")
