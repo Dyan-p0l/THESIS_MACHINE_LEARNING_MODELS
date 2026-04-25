@@ -13,3 +13,4 @@ skl2onnx
 onnx
 onnxruntime
 onnxmltools
+tf2onnx

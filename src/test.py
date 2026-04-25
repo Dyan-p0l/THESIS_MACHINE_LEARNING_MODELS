@@ -20,7 +20,7 @@ print("\n=== Predictions ===")
 for val in test_values:
     inp = np.array([[val]], dtype=np.float32)
     result = sess.run(None, {'float_input': inp})
-    label_index = result[0][0]
+    label_index = np.argmax(result[0], axis=1)[0]
     print(f"  capacitance={val:.1f} pF → raw output={label_index} → {label_map.get(int(label_index), '???')}")
 
 X_train = np.load('./data/preprocessed/X_train.npy')
