@@ -1,0 +1,2 @@
+algorithm,n_clusters_found,best_m,silhouette,davies_bouldin,ari
+Fuzzy C-Means,2,1.5,0.7222,0.4194,0.2544
